@@ -15,26 +15,26 @@
 
 ### Backup a file
 
-rbak file path/to/file.txt
+`rbak file path/to/file.txt`
 
 
 This creates `path/to/file.bak`.
 
 ### Backup a directory recursively
 
-rbak dir path/to/directory
+`rbak dir path/to/directory`
 
 
 This creates `path/to/directory_bak/` with all contents copied recursively.
 
 ### Help
 
-rbak --help
+`rbak --help`
 
 
 ## Installation
 
-cargo install rbak
+`cargo install rbak`
 
 
 ## Development
