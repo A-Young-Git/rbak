@@ -8,7 +8,7 @@ use tracing::info;
 
 /// Simple file/directory backup tool (.bak files, _bak directories)
 #[derive(Debug, Parser)]
-#[command(name = "rbak", version = "0.1.0", about, long_about = None)]
+#[command(name = "rbak", version = "1.0.0", about, long_about = None)]
 pub struct Args {
     #[command(subcommand)]
     command: Commands,
@@ -20,11 +20,17 @@ pub enum Commands {
     File {
         /// Path to file to backup
         path: PathBuf,
+        /// Optional destination path for backup file
+        #[arg(short, long)]
+        dest: Option<PathBuf>,
     },
     /// Backup a directory recursively (creates dir_bak)
     Dir {
         /// Path to directory to backup
         path: PathBuf,
+        /// Optional destination path for backup directory
+        #[arg(short, long)]
+        dest: Option<PathBuf>,
     },
 }
 
@@ -92,23 +98,44 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Commands::File { path } => {
+        Commands::File { path, dest } => {
             info!("Backing up file: {}", path.display());
-            if let Some(bak) = backup_path(&path, BackupType::File) {
-                fs::copy(&path, &bak).context("copying file backup")?;
-                info!("Created backup file: {}", bak.display());
+
+            let bak = if let Some(dest_dir) = dest {
+                // Custom dest: dest_dir/filename.bak
+                let mut bak = dest_dir;
+                if let Some(name) = path.file_name() {
+                    bak.push(Path::new(name).with_extension("bak"));
+                }
+                bak
             } else {
-                anyhow::bail!("{} is not a valid file", path.display());
-            }
+                // Default: same dir as source
+                backup_path(&path, BackupType::File)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid file"))?
+            };
+
+            fs::copy(&path, &bak).context("copying file backup")?;
+            info!("Created backup file: {}", bak.display());
         }
-        Commands::Dir { path } => {
+        Commands::Dir { path, dest } => {
             info!("Backing up directory: {}", path.display());
-            if let Some(bak_dir) = backup_path(&path, BackupType::Directory) {
-                backup_directory(&path, &bak_dir).context("directory backup")?;
-                info!("Created backup directory: {}", bak_dir.display());
+
+            let bak_dir = if let Some(dest_dir) = dest {
+                // Build backup path relative to dest_dir, reusing backup_path logic
+                let orig_backup = backup_path(&path, BackupType::Directory)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid directory"))?;
+                let bak_dir_name = orig_backup.file_name().unwrap();
+
+                let mut bak_dir = dest_dir;
+                bak_dir.push(bak_dir_name);
+                bak_dir
             } else {
-                anyhow::bail!("{} is not a valid directory", path.display());
-            }
+                backup_path(&path, BackupType::Directory)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid directory"))?
+            };
+
+            backup_directory(&path, &bak_dir).context("directory backup")?;
+            info!("Created backup directory: {}", bak_dir.display());
         }
     }
 
@@ -155,5 +182,78 @@ mod tests {
         let backed_up = dst_dir.join("test.txt");
         assert!(backed_up.exists());
         assert_eq!(fs::read_to_string(&backed_up).unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_backup_file_with_dest() {
+        let tmp = TempDir::new().unwrap();
+        let src_file = tmp.path().join("test.txt");
+        fs::write(&src_file, b"hello").unwrap();
+
+        let dest_dir = tmp.path().join("backups");
+        fs::create_dir_all(&dest_dir).unwrap();
+
+        let bak = {
+            let mut bak_path = dest_dir.clone();
+            bak_path.push(Path::new("test.txt").with_extension("bak"));
+            bak_path
+        };
+
+        assert!(!bak.exists());
+
+        // Manually simulate the logic:
+        let result = if let Some(dest) = Some(dest_dir.clone()) {
+            let mut bak = dest;
+            bak.push(Path::new("test.txt").with_extension("bak"));
+            bak
+        } else {
+            backup_path(&src_file, BackupType::File).unwrap()
+        };
+
+        assert_eq!(result, bak);
+
+        // Perform copy to simulate what main does
+        fs::copy(&src_file, &result).unwrap();
+        assert!(result.exists());
+        assert_eq!(fs::read(&result).unwrap(), b"hello"[..]);
+    }
+
+    #[test]
+    fn test_backup_path_directory_with_dest() {
+        let tmp = TempDir::new().unwrap();
+        let src_dir = tmp.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+
+        let dest_dir = tmp.path().join("backups");
+        fs::create_dir_all(&dest_dir).unwrap();
+
+        let expected_backup_dir = {
+            let mut path = dest_dir.clone();
+            path.push("src_bak");
+            path
+        };
+
+        // Use backup_path to get default name (with _bak suffix)
+        let default_backup_dir = backup_path(&src_dir, BackupType::Directory).unwrap();
+
+        // Simulate logic in main:
+        let bak_dir = if let Some(dest) = Some(dest_dir.clone()) {
+            let orig_backup = default_backup_dir.clone();
+            let bak_dir_name = orig_backup.file_name().unwrap();
+
+            let mut bak_dir = dest;
+            bak_dir.push(bak_dir_name);
+            bak_dir
+        } else {
+            backup_path(&src_dir, BackupType::Directory).unwrap()
+        };
+
+        assert_eq!(bak_dir, expected_backup_dir);
+
+        // Now simulate recursive directory copy
+        backup_directory(&src_dir, &bak_dir).unwrap();
+
+        // Destination directory should exist
+        assert!(bak_dir.exists());
     }
 }
